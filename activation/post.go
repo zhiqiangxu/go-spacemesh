@@ -3,6 +3,7 @@ package activation
 import (
 	"context"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"runtime"
@@ -288,6 +289,11 @@ func (mgr *PostSetupManager) StartSession(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+
+	cfgBytes, _ := json.Marshal(mgr.cfg)
+	optBytes, _ := json.Marshal(mgr.lastOpts)
+	provingOpts, _ := json.Marshal(mgr.provingOpts)
+
 	mgr.logger.With().Info("post setup session starting",
 		log.String("node_id", mgr.id.String()),
 		log.String("commitment_atx", mgr.commitmentAtxId.String()),
@@ -295,7 +301,11 @@ func (mgr *PostSetupManager) StartSession(ctx context.Context) error {
 		log.String("num_units", fmt.Sprintf("%d", mgr.lastOpts.NumUnits)),
 		log.String("labels_per_unit", fmt.Sprintf("%d", mgr.cfg.LabelsPerUnit)),
 		log.String("provider", fmt.Sprintf("%d", mgr.lastOpts.ProviderID)),
+		log.String("xxxcfg", string(cfgBytes)),
+		log.String("xxxopt", string(optBytes)),
+		log.String("xxxprovingOpts", string(provingOpts)),
 	)
+
 	events.EmitInitStart(mgr.id, mgr.commitmentAtxId)
 	err = mgr.init.Initialize(ctx)
 	events.EmitInitComplete(err != nil)
