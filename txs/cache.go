@@ -787,14 +787,18 @@ func (c *Cache) ApplyLayer(
 }
 
 func (c *Cache) RevertToLayer(db *sql.Database, revertTo types.LayerID) error {
+	start := time.Now()
 	if err := undoLayers(db, revertTo.Add(1)); err != nil {
 		return err
 	}
+	c.logger.Info("RevertToLayer took %v", time.Since(start))
 
+	start = time.Now()
 	if err := c.buildFromScratch(db); err != nil {
 		c.logger.With().Error("failed to build from scratch after revert", log.Err(err))
 		return err
 	}
+	c.logger.Info("buildFromScratch took %v", time.Since(start))
 	return nil
 }
 
