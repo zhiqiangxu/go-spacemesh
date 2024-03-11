@@ -3,6 +3,7 @@ package transactions
 import (
 	"encoding/binary"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/spacemeshos/go-spacemesh/codec"
@@ -263,7 +264,7 @@ func GetByAddress(db sql.Executor, from, to types.LayerID, address types.Address
 
 // AddressesWithPendingTransactions returns list of addresses with pending transactions.
 // Query is expensive, meant to be used only on startup.
-func AddressesWithPendingTransactions(db sql.Executor) ([]types.AddressNonce, error) {
+func AddressesWithPendingTransactionsOrigin(db sql.Executor) ([]types.AddressNonce, error) {
 	var rst []types.AddressNonce
 	if _, err := db.Exec(`select principal as current, min(nonce) from transactions
 	where result is null and nonce > (select coalesce(max(nonce), 0) from transactions
@@ -284,6 +285,102 @@ func AddressesWithPendingTransactions(db sql.Executor) ([]types.AddressNonce, er
 		}); err != nil {
 		return nil, fmt.Errorf("addresses with pending txs %w", err)
 	}
+	return rst, nil
+}
+
+func AddressesWithPendingTransactions(db sql.Executor) ([]types.AddressNonce, error) {
+	var rst []types.AddressNonce
+	result := make(map[types.Address]map[byte]*uint64)
+	if _, err := db.Exec(`select principal as current, result is null, coalesce(max(nonce),0) from transactions
+	group by principal, result is null
+	;`,
+		nil,
+		func(stmt *sql.Statement) bool {
+			addr := types.Address{}
+			stmt.ColumnBytes(0, addr[:])
+			null := [1]byte{}
+			stmt.ColumnBytes(1, null[:])
+			maxNonce := [8]byte{}
+			stmt.ColumnBytes(2, maxNonce[:])
+			if result[addr] == nil {
+				result[addr] = make(map[byte]*uint64)
+			}
+			maxNonceUint64 := binary.BigEndian.Uint64(maxNonce[:])
+			result[addr][null[0]] = &maxNonceUint64
+
+			return true
+		}); err != nil {
+		return nil, fmt.Errorf("addresses with pending txs %w", err)
+	}
+
+	var candidates []types.AddressNonce
+	for principal, subresult := range result {
+		pendingMaxNonce := subresult['1']
+		if pendingMaxNonce == nil {
+			continue
+		}
+
+		doneMaxNonce := subresult['0']
+		if doneMaxNonce == nil {
+			candidates = append(candidates, types.AddressNonce{
+				Address: principal,
+				Nonce:   ^uint64(0),
+			})
+			continue
+		}
+
+		if *pendingMaxNonce > *doneMaxNonce {
+			candidates = append(candidates, types.AddressNonce{
+				Address: principal,
+				Nonce:   *doneMaxNonce,
+			})
+		}
+	}
+
+	if len(candidates) == 0 {
+		return rst, nil
+	}
+
+	sqls := make([]string, 0, len(candidates))
+	for i, candidate := range candidates {
+		if candidate.Nonce == ^uint64(0) {
+			sqls = append(sqls, fmt.Sprintf(`select principal, min(nonce) from transactions
+			where result is null and principal = ?%d`, 2*i+1))
+		} else {
+			sqls = append(sqls, fmt.Sprintf(`select principal, min(nonce) from transactions
+			where result is null and principal = ?%d and nonce > ?%d`, 2*i+1, 2*i+2))
+		}
+
+	}
+
+	bigSQL := strings.Join(sqls, " union all ")
+	if _, err := db.Exec(bigSQL,
+		func(stmt *sql.Statement) {
+
+			for i := range candidates {
+				candidate := candidates[i]
+				stmt.BindBytes(2*i+1, candidate.Address.Bytes())
+				if candidate.Nonce != ^uint64(0) {
+					stmt.BindBytes(2*i+2, util.Uint64ToBytesBigEndian(candidate.Nonce))
+				}
+			}
+		},
+		func(stmt *sql.Statement) bool {
+			addr := types.Address{}
+			stmt.ColumnBytes(0, addr[:])
+			nonce := [8]byte{}
+			stmt.ColumnBytes(1, nonce[:])
+
+			rst = append(rst, types.AddressNonce{
+				Address: addr,
+				Nonce:   binary.BigEndian.Uint64(nonce[:]),
+			})
+
+			return true
+		}); err != nil {
+		return nil, fmt.Errorf("addresses with pending txs %w", err)
+	}
+
 	return rst, nil
 }
 
