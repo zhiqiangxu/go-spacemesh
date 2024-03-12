@@ -341,6 +341,31 @@ func AddressesWithPendingTransactions(db sql.Executor) ([]types.AddressNonce, er
 		return rst, nil
 	}
 
+	/* default max is 500 for sqlite, https://stackoverflow.com/questions/9527851/sqlite-error-too-many-terms-in-compound-select*/
+	BATCH := 500
+	for i := 0; ; i += 1 {
+		start := BATCH * i
+		end := start + BATCH
+		if end > len(candidates) {
+			end = len(candidates)
+		}
+		fmt.Printf("fetching batch [%d,%d), total %d time: %v\n", start, end, len(candidates), time.Now())
+		sub, err := batchQuery(db, candidates[start:end])
+		if err != nil {
+			return nil, err
+		}
+		rst = append(rst, sub...)
+		if end == len(candidates) {
+			break
+		}
+	}
+
+	return rst, nil
+}
+
+func batchQuery(db sql.Executor, candidates []types.AddressNonce) ([]types.AddressNonce, error) {
+	rst := make([]types.AddressNonce, 0, len(candidates))
+
 	sqls := make([]string, 0, len(candidates))
 	for i, candidate := range candidates {
 		if candidate.Nonce == ^uint64(0) {
