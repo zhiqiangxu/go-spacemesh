@@ -581,6 +581,7 @@ func (f *Fetch) send(requests []RequestMessage) {
 						best := f.peers.SelectBest(RedundantPeers)
 						if len(best) == 0 {
 							f.logger.With().Error("no active peers")
+							f.handleHashError(batch, err)
 							return
 						}
 						peer = randomPeer(best)
