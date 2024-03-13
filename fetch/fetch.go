@@ -31,7 +31,8 @@ const (
 
 	cacheSize = 1000
 
-	RedundantPeers = 20
+	RedundantPeers  = 20
+	BatchRetryLimit = 3
 )
 
 var (
@@ -556,8 +557,6 @@ func (f *Fetch) send(requests []RequestMessage) {
 
 	peer2batches := f.organizeRequests(requests)
 
-	firstResponse := map[types.Hash32]struct{}{}
-	firstResponseLk := sync.Mutex{}
 	for peer, peerBatches := range peer2batches {
 		peer := peer
 		for _, reqs := range peerBatches {
@@ -568,28 +567,33 @@ func (f *Fetch) send(requests []RequestMessage) {
 				peer: peer,
 			}
 			batch.setID()
-			firstResponseLk.Lock()
-			firstResponse[batch.ID] = struct{}{}
-			firstResponseLk.Unlock()
 			go func() {
-				data, err := f.sendBatch(peer, batch)
-				if err != nil {
-					f.logger.With().Warning(
-						"failed to send batch request",
-						log.Stringer("batch", batch.ID),
-						log.Stringer("peer", peer),
-						log.Err(err),
-					)
-					f.handleHashError(batch, err)
-				} else {
-					firstResponseLk.Lock()
-					if _, ok := firstResponse[batch.ID]; ok {
-						delete(firstResponse, batch.ID)
-						firstResponseLk.Unlock()
+				for i := 0; i < BatchRetryLimit; i++ {
+					data, err := f.sendBatch(peer, batch)
+					if err != nil {
+						f.logger.With().Warning(
+							"failed to send batch request",
+							log.Stringer("batch", batch.ID),
+							log.Stringer("peer", peer),
+							log.Err(err),
+						)
+
+						best := f.peers.SelectBest(RedundantPeers)
+						if len(best) == 0 {
+							f.logger.With().Error("no active peers")
+							return
+						}
+						peer = randomPeer(best)
+						batch.peer = peer
+						if i != BatchRetryLimit-1 {
+							continue
+						}
+
+						f.handleHashError(batch, err)
+					} else {
 						f.receiveResponse(data, batch)
 						return
 					}
-					firstResponseLk.Unlock()
 				}
 			}()
 		}
@@ -678,14 +682,12 @@ func (f *Fetch) organizeRequests(requests []RequestMessage) map[p2p.Peer][][]Req
 		return nil
 	}
 	for _, req := range requests {
-		for i := 0; i < 3; i++ {
-			target := randomPeer(best)
-			_, ok := peer2requests[target]
-			if !ok {
-				peer2requests[target] = []RequestMessage{req}
-			} else {
-				peer2requests[target] = append(peer2requests[target], req)
-			}
+		target := randomPeer(best)
+		_, ok := peer2requests[target]
+		if !ok {
+			peer2requests[target] = []RequestMessage{req}
+		} else {
+			peer2requests[target] = append(peer2requests[target], req)
 		}
 	}
 
