@@ -655,7 +655,6 @@ func (f *Fetch) organizeRequestsOrigin(requests []RequestMessage) map[p2p.Peer][
 }
 
 func (f *Fetch) organizeRequests(requests []RequestMessage) map[p2p.Peer][][]RequestMessage {
-	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
 	peer2requests := make(map[p2p.Peer][]RequestMessage)
 
 	best := f.peers.SelectBest(RedundantPeers)
