@@ -555,6 +555,9 @@ func (f *Fetch) send(requests []RequestMessage) {
 	}
 
 	peer2batches := f.organizeRequests(requests)
+
+	firstResponse := map[types.Hash32]struct{}{}
+	firstResponseLk := sync.Mutex{}
 	for peer, peerBatches := range peer2batches {
 		peer := peer
 		for _, reqs := range peerBatches {
@@ -565,6 +568,9 @@ func (f *Fetch) send(requests []RequestMessage) {
 				peer: peer,
 			}
 			batch.setID()
+			firstResponseLk.Lock()
+			firstResponse[batch.ID] = struct{}{}
+			firstResponseLk.Unlock()
 			go func() {
 				data, err := f.sendBatch(peer, batch)
 				if err != nil {
@@ -576,14 +582,21 @@ func (f *Fetch) send(requests []RequestMessage) {
 					)
 					f.handleHashError(batch, err)
 				} else {
-					f.receiveResponse(data, batch)
+					firstResponseLk.Lock()
+					if _, ok := firstResponse[batch.ID]; ok {
+						delete(firstResponse, batch.ID)
+						firstResponseLk.Unlock()
+						f.receiveResponse(data, batch)
+						return
+					}
+					firstResponseLk.Unlock()
 				}
 			}()
 		}
 	}
 }
 
-func (f *Fetch) organizeRequests(requests []RequestMessage) map[p2p.Peer][][]RequestMessage {
+func (f *Fetch) organizeRequestsOrigin(requests []RequestMessage) map[p2p.Peer][][]RequestMessage {
 	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
 	peer2requests := make(map[p2p.Peer][]RequestMessage)
 
@@ -618,6 +631,62 @@ func (f *Fetch) organizeRequests(requests []RequestMessage) map[p2p.Peer][][]Req
 			peer2requests[target] = []RequestMessage{req}
 		} else {
 			peer2requests[target] = append(peer2requests[target], req)
+		}
+	}
+
+	// split every peer's requests into batches of f.cfg.BatchSize each
+	result := make(map[p2p.Peer][][]RequestMessage)
+	for peer, reqs := range peer2requests {
+		if len(reqs) < f.cfg.BatchSize {
+			result[peer] = [][]RequestMessage{
+				reqs,
+			}
+			continue
+		}
+		for i := 0; i < len(reqs); i += f.cfg.BatchSize {
+			j := i + f.cfg.BatchSize
+			if j > len(reqs) {
+				j = len(reqs)
+			}
+			result[peer] = append(result[peer], reqs[i:j])
+		}
+	}
+	return result
+}
+
+func (f *Fetch) organizeRequests(requests []RequestMessage) map[p2p.Peer][][]RequestMessage {
+	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
+	peer2requests := make(map[p2p.Peer][]RequestMessage)
+
+	best := f.peers.SelectBest(RedundantPeers)
+	if len(best) == 0 {
+		f.logger.Info("cannot send batch: no peers found")
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		errNoPeer := errors.New("no peers")
+		for _, msg := range requests {
+			if req, ok := f.ongoing[msg.Hash]; ok {
+				req.promise.err = errNoPeer
+				close(req.promise.completed)
+				delete(f.ongoing, req.hash)
+			} else {
+				f.logger.With().Error("ongoing request missing",
+					log.Stringer("hash", msg.Hash),
+					log.String("hint", string(msg.Hint)),
+				)
+			}
+		}
+		return nil
+	}
+	for _, req := range requests {
+		for i := 0; i < 3; i++ {
+			target := randomPeer(best)
+			_, ok := peer2requests[target]
+			if !ok {
+				peer2requests[target] = []RequestMessage{req}
+			} else {
+				peer2requests[target] = append(peer2requests[target], req)
+			}
 		}
 	}
 
