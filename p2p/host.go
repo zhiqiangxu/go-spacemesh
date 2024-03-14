@@ -223,7 +223,7 @@ func New(
 		return nil, err
 	}
 
-	logger.Zap().Info("starting libp2p host", zap.Any("config", &cfg))
+	logger.Zap().Info("starting libp2p host", zap.Any("config", &cfg), zap.ByteString("prologue", prologue), zap.ByteString("quicNetCookie", quicNetCookie))
 	key, err := EnsureIdentity(cfg.DataDir)
 	if err != nil {
 		return nil, err
