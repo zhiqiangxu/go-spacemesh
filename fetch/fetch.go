@@ -8,6 +8,8 @@ import (
 	"errors"
 	"math/rand"
 	"net/http"
+	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -668,6 +670,23 @@ type JsonResponse struct {
 }
 
 func (f *Fetch) manualConnect() ([]peer.ID, error) {
+
+	value := os.Getenv("SMH_CONNECT")
+	if value != "" {
+		var peers []peer.ID
+		for _, peerInfo := range strings.Split(value, ";") {
+			addrInfo, err := peer.AddrInfoFromString(peerInfo)
+			if err != nil {
+				f.logger.Info("manualConnect: invalid peerInfo:%s, error:%v", peerInfo, err)
+				break
+			}
+			peers = append(peers, addrInfo.ID)
+		}
+		if len(peers) > 0 {
+			return peers, nil
+		}
+	}
+
 	values := map[string]string{"id": f.host.ID().String()}
 
 	jsonValue, _ := json.Marshal(values)
