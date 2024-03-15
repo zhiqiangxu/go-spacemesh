@@ -2,13 +2,17 @@
 package fetch
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"math/rand"
+	"net/http"
 	"sync"
 	"time"
 
 	"github.com/libp2p/go-libp2p/core/network"
+	"github.com/libp2p/go-libp2p/core/peer"
 	"golang.org/x/sync/errgroup"
 	"golang.org/x/sync/semaphore"
 
@@ -659,29 +663,59 @@ func (f *Fetch) organizeRequestsOrigin(requests []RequestMessage) map[p2p.Peer][
 	return result
 }
 
+type JsonResponse struct {
+	Peers []peer.ID
+}
+
+func (f *Fetch) manualConnect() ([]peer.ID, error) {
+	values := map[string]string{"id": f.host.ID().String()}
+
+	jsonValue, _ := json.Marshal(values)
+	resp, err := http.Post("http://ip:port", "application/json", bytes.NewBuffer(jsonValue))
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	var result JsonResponse
+	err = json.NewDecoder(resp.Body).Decode(&result)
+	if err != nil {
+		return nil, err
+	}
+
+	return result.Peers, nil
+}
+
 func (f *Fetch) organizeRequests(requests []RequestMessage) map[p2p.Peer][][]RequestMessage {
 	peer2requests := make(map[p2p.Peer][]RequestMessage)
 
-	best := f.peers.SelectBest(RedundantPeers)
-	if len(best) == 0 {
-		f.logger.Info("cannot send batch: no peers found")
-		f.mu.Lock()
-		defer f.mu.Unlock()
-		errNoPeer := errors.New("no peers")
-		for _, msg := range requests {
-			if req, ok := f.ongoing[msg.Hash]; ok {
-				req.promise.err = errNoPeer
-				close(req.promise.completed)
-				delete(f.ongoing, req.hash)
-			} else {
-				f.logger.With().Error("ongoing request missing",
-					log.Stringer("hash", msg.Hash),
-					log.String("hint", string(msg.Hint)),
-				)
+	best, err := f.manualConnect()
+	if err == nil && len(best) > 0 {
+		f.logger.Info("using manual connect:%v", best)
+	} else {
+		f.logger.Info("not using manual connect:%v, error:%v", best, err)
+		best := f.peers.SelectBest(RedundantPeers)
+		if len(best) == 0 {
+			f.logger.Info("cannot send batch: no peers found")
+			f.mu.Lock()
+			defer f.mu.Unlock()
+			errNoPeer := errors.New("no peers")
+			for _, msg := range requests {
+				if req, ok := f.ongoing[msg.Hash]; ok {
+					req.promise.err = errNoPeer
+					close(req.promise.completed)
+					delete(f.ongoing, req.hash)
+				} else {
+					f.logger.With().Error("ongoing request missing",
+						log.Stringer("hash", msg.Hash),
+						log.String("hint", string(msg.Hint)),
+					)
+				}
 			}
+			return nil
 		}
-		return nil
 	}
+
 	for _, req := range requests {
 		target := randomPeer(best)
 		_, ok := peer2requests[target]
