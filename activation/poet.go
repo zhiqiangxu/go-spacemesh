@@ -226,6 +226,7 @@ func (c *HTTPPoetClient) req(ctx context.Context, method, path string, reqBody, 
 		return fmt.Errorf("marshaling request body: %w", err)
 	}
 
+	fmt.Println("poeturl", c.baseURL.JoinPath(path).String())
 	req, err := retryablehttp.NewRequestWithContext(ctx, method, c.baseURL.JoinPath(path).String(), jsonReqBody)
 	if err != nil {
 		return fmt.Errorf("creating HTTP request: %w", err)
